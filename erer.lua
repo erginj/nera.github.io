@@ -1207,6 +1207,593 @@ SettingsTab:Button({
     end
 })
 
+-- PETS/EGGS TAB (WINDUI VERSION, PART 1)
+local PetsTab = Window:Tab({ Title = "Pets/Eggs", Icon = "gift" })
+
+-- State
+local AutoFeedPetEnabled = false
+local SelectedPlantsToFeed = {}
+local PetEggESPEnabled = false
+local espCache = {}
+local activeEggs = {}
+local PetFeedingIndex = 1
+local LastFruitIndex = 1
+
+local function getPetServices()
+    local ok, result = pcall(function()
+        if ReplicatedStorage:FindFirstChild("Modules") and ReplicatedStorage.Modules:FindFirstChild("PetServices") then
+            local PetServices = ReplicatedStorage.Modules.PetServices
+            local ActivePetsService = require(PetServices:FindFirstChild("ActivePetsService"))
+            local PetsService = require(PetServices:FindFirstChild("PetsService"))
+            return { ActivePetsService = ActivePetsService, PetsService = PetsService }
+        end
+        return nil
+    end)
+    return ok and result or nil
+end
+
+local function petNeedsFood(petUUID)
+    local ok, result = pcall(function()
+        local DataService = require(ReplicatedStorage.Modules.DataService)
+        local data = DataService:GetData()
+        if not data or not data.PetsData then return true end
+        local petInventory = data.PetsData.PetInventory
+        if not petInventory or not petInventory.Data then return true end
+        local petData = petInventory.Data[petUUID]
+        if not petData then return true end
+        local PetRegistry = require(ReplicatedStorage.Data.PetRegistry)
+        local PetList = PetRegistry.PetList
+        local petTypeData = PetList[petData.PetType]
+        if not petTypeData then return true end
+        local defaultHunger = petTypeData.DefaultHunger or 100
+        local currentHunger = petData.PetData.Hunger or 0
+        local hungerPercentage = currentHunger / defaultHunger
+        return hungerPercentage < 0.9
+    end)
+    return ok and result or true
+end
+
+local function getActivePets()
+    local petServices = getPetServices()
+    if not petServices then return {} end
+    local ok, result = pcall(function()
+        local PetUtilities
+        if ReplicatedStorage:FindFirstChild("Modules") and ReplicatedStorage.Modules:FindFirstChild("PetServices") then
+            PetUtilities = require(ReplicatedStorage.Modules.PetServices:FindFirstChild("PetUtilities"))
+        end
+        if not PetUtilities then return {} end
+        local DataService = require(ReplicatedStorage.Modules.DataService)
+        local data = DataService:GetData()
+        if not data or not data.PetsData then return {} end
+        local PetRegistry = require(ReplicatedStorage.Data.PetRegistry)
+        local PetList = PetRegistry.PetList
+        local equippedPets = data.PetsData.EquippedPets or {}
+        local activePets = {}
+        local petsFromUtilities = PetUtilities:GetPetsSortedByAge(LocalPlayer, 0, false, true)
+        for _, petData in pairs(petsFromUtilities) do
+            local petTypeData = PetList[petData.PetType]
+            local defaultHunger = petTypeData and petTypeData.DefaultHunger or 100
+            local currentHunger = petData.PetData.Hunger or 0
+            local hungerPercentage = currentHunger / defaultHunger
+            local needsFood = hungerPercentage < 0.9
+            table.insert(activePets, {
+                uuid = petData.UUID,
+                petType = petData.PetType or "Unknown",
+                petData = petData.PetData,
+                isEquipped = true,
+                currentHunger = currentHunger,
+                maxHunger = defaultHunger,
+                hungerPercentage = hungerPercentage,
+                needsFood = needsFood,
+            })
+        end
+        for _, obj in pairs(workspace:GetDescendants()) do
+            if obj:GetAttribute("OWNER") == LocalPlayer.Name and obj:GetAttribute("UUID") and obj:HasTag("PetTargetable") then
+                local alreadyHave = false
+                for _, existing in pairs(activePets) do
+                    if existing.uuid == obj:GetAttribute("UUID") then
+                        alreadyHave = true
+                        existing.object = obj
+                        break
+                    end
+                end
+                if not alreadyHave then
+                    local stillNeedsFood = petNeedsFood(obj:GetAttribute("UUID"))
+                    table.insert(activePets, {
+                        uuid = obj:GetAttribute("UUID"),
+                        petType = obj:GetAttribute("PetType") or "Unknown",
+                        object = obj,
+                        isEquipped = true,
+                        currentHunger = 0,
+                        maxHunger = 100,
+                        hungerPercentage = 0,
+                        needsFood = stillNeedsFood,
+                    })
+                end
+            end
+        end
+        return activePets
+    end)
+    return ok and result or {}
+end
+
+local function getPlayerFruits()
+    local fruits = {}
+    if LocalPlayer.Character then
+        for _, tool in pairs(LocalPlayer.Character:GetChildren()) do
+            if tool:IsA("Tool") and tool:HasTag("FruitTool") then
+                table.insert(fruits, tool.Name)
+            end
+        end
+    end
+    if LocalPlayer.Backpack then
+        for _, tool in pairs(LocalPlayer.Backpack:GetChildren()) do
+            if tool:IsA("Tool") and tool:HasTag("FruitTool") then
+                table.insert(fruits, tool.Name)
+            end
+        end
+    end
+    local uniqueFruits, seen = {}, {}
+    for _, fruit in pairs(fruits) do
+        if not seen[fruit] then
+            seen[fruit] = true
+            table.insert(uniqueFruits, fruit)
+        end
+    end
+    return uniqueFruits
+end
+
+local function feedPetsWithPlants()
+    local petServices = getPetServices()
+    if not petServices then return false end
+    local activePets = getActivePets()
+    if #activePets == 0 then
+        WindUI:Notify({Title="Pets",Content="No active pets found!"})
+        return false
+    end
+    local hungryPets = {}
+    for _, pet in pairs(activePets) do
+        if pet.needsFood then
+            table.insert(hungryPets, pet)
+        end
+    end
+    if #hungryPets == 0 then
+        WindUI:Notify({Title="Pets",Content="All pets are well-fed!"})
+        return false
+    end
+    local availableFruits = {}
+    for plantName, selected in pairs(SelectedPlantsToFeed) do
+        if selected then
+            local hasFruit, fruitTool = false, nil
+            if LocalPlayer.Character then
+                for _, tool in pairs(LocalPlayer.Character:GetChildren()) do
+                    if tool:IsA("Tool") and tool:HasTag("FruitTool") and tool.Name == plantName then
+                        hasFruit, fruitTool = true, tool
+                        break
+                    end
+                end
+            end
+            if not hasFruit and LocalPlayer.Backpack then
+                for _, tool in pairs(LocalPlayer.Backpack:GetChildren()) do
+                    if tool:IsA("Tool") and tool:HasTag("FruitTool") and tool.Name == plantName then
+                        hasFruit, fruitTool = true, tool
+                        break
+                    end
+                end
+            end
+            if hasFruit and fruitTool then
+                table.insert(availableFruits, { name = plantName, tool = fruitTool })
+            end
+        end
+    end
+    if #availableFruits == 0 then
+        WindUI:Notify({Title="Pets",Content="No selected fruits found in inventory!"})
+        return false
+    end
+    local fedCount = 0
+    for _, fruitData in pairs(availableFruits) do
+        if fruitData.tool.Parent ~= LocalPlayer.Character then
+            LocalPlayer.Character.Humanoid:EquipTool(fruitData.tool)
+            task.wait(0.5)
+        end
+        for _, pet in pairs(hungryPets) do
+            if not AutoFeedPetEnabled then break end
+            if petNeedsFood(pet.uuid) then
+                local ok = pcall(function() petServices.ActivePetsService:Feed(pet.uuid) end)
+                if ok then
+                    fedCount = fedCount + 1
+                    task.wait(0.6)
+                end
+            end
+        end
+        if AutoFeedPetEnabled then task.wait(0.7) end
+    end
+    if fedCount > 0 then
+        WindUI:Notify({Title="Pets",Content="Fed "..fedCount.." hungry pets!"})
+    else
+        WindUI:Notify({Title="Pets",Content="No pets were fed!"})
+    end
+    return fedCount > 0
+end
+
+local function autoFeedPetsInOrder()
+    if not AutoFeedPetEnabled then return end
+    spawn(function()
+        while AutoFeedPetEnabled do
+            task.wait(2)
+            local petServices = getPetServices()
+            if not petServices then task.wait(3) continue end
+            local activePets = getActivePets()
+            if #activePets == 0 then task.wait(3) continue end
+            local hungryPets = {}
+            for _, pet in pairs(activePets) do
+                if pet.hungerPercentage and pet.hungerPercentage < 0.7 then
+                    table.insert(hungryPets, pet)
+                end
+            end
+            if #hungryPets == 0 then task.wait(5) continue end
+            local availableFruits = {}
+            for plantName, selected in pairs(SelectedPlantsToFeed) do
+                if selected then
+                    local hasFruit, fruitTool = false, nil
+                    if LocalPlayer.Character then
+                        for _, tool in pairs(LocalPlayer.Character:GetChildren()) do
+                            if tool:IsA("Tool") and tool:HasTag("FruitTool") and tool.Name == plantName then
+                                hasFruit, fruitTool = true, tool
+                                break
+                            end
+                        end
+                    end
+                    if not hasFruit and LocalPlayer.Backpack then
+                        for _, tool in pairs(LocalPlayer.Backpack:GetChildren()) do
+                            if tool:IsA("Tool") and tool:HasTag("FruitTool") and tool.Name == plantName then
+                                hasFruit, fruitTool = true, tool
+                                break
+                            end
+                        end
+                    end
+                    if hasFruit and fruitTool then
+                        table.insert(availableFruits, { name = plantName, tool = fruitTool })
+                    end
+                end
+            end
+            if #availableFruits == 0 then task.wait(3) continue end
+            if PetFeedingIndex > #hungryPets then PetFeedingIndex = 1 end
+            if LastFruitIndex > #availableFruits then LastFruitIndex = 1 end
+            local currentPet = hungryPets[PetFeedingIndex]
+            local currentFruit = availableFruits[LastFruitIndex]
+            if currentPet and currentFruit then
+                if currentFruit.tool.Parent ~= LocalPlayer.Character then
+                    LocalPlayer.Character.Humanoid:EquipTool(currentFruit.tool)
+                    task.wait(0.3)
+                end
+                local currentTool = LocalPlayer.Character:FindFirstChildWhichIsA("Tool")
+                if currentTool and currentTool:HasTag("FruitTool") then
+                    pcall(function()
+                        petServices.ActivePetsService:Feed(currentPet.uuid)
+                    end)
+                end
+                PetFeedingIndex = PetFeedingIndex + 1
+                if PetFeedingIndex > #hungryPets then
+                    LastFruitIndex = LastFruitIndex + 1
+                    if LastFruitIndex > #availableFruits then
+                        LastFruitIndex = 1
+                    end
+                    PetFeedingIndex = 1
+                end
+            end
+        end
+    end)
+end
+
+local function autoFeedPets()
+    if not AutoFeedPetEnabled then return end
+    autoFeedPetsInOrder()
+end
+
+local petFruitsDropdown
+local function updateFruitsDropdown()
+    local playerFruits = getPlayerFruits()
+    if #playerFruits > 0 then
+        petFruitsDropdown:SetValues(playerFruits)
+        WindUI:Notify({Title="Fruits",Content="Found " .. #playerFruits .. " fruits in inventory!"})
+    else
+        petFruitsDropdown:SetValues({ "No fruits found" })
+        WindUI:Notify({Title="Fruits",Content="No fruits found in inventory!"})
+    end
+end
+
+-- UI: Auto Feed Pets
+local AutoFeedSection = PetsTab:Section({ Title = "Auto Feed Pets" })
+petFruitsDropdown = AutoFeedSection:Dropdown({
+    Title = "Fruits to Feed",
+    Values = getPlayerFruits(),
+    Multi = true,
+    Callback = function(Value)
+        SelectedPlantsToFeed = {}
+        for _, v in pairs(Value) do
+            SelectedPlantsToFeed[v] = true
+        end
+    end,
+})
+AutoFeedSection:Button({
+    Title = "🔄 Refresh Fruit List",
+    Callback = updateFruitsDropdown
+})
+AutoFeedSection:Toggle({
+    Title = "Auto Feed Pets (<70%)",
+    Default = false,
+    Callback = function(Value)
+        AutoFeedPetEnabled = Value
+        if Value then autoFeedPets() end
+    end,
+})
+AutoFeedSection:Button({
+    Title = "Feed Pets Now",
+    Callback = feedPetsWithPlants
+})
+
+-- PETS/EGGS TAB (WINDUI VERSION, PART 2) -- Pet Info, Pet Detection, ESP, etc.
+
+-- Pet Information Section
+local petInfoSection = PetsTab:Section({ Title = "Pet Information" })
+
+petInfoSection:Button({
+    Title = "Show Active Pets",
+    Callback = function()
+        local pets = getActivePets()
+        if #pets == 0 then
+            WindUI:Notify({Title="Pets",Content="No active pets found"})
+            return
+        end
+        local msg = {}
+        for i, pet in ipairs(pets) do
+            local percent = pet.hungerPercentage and math.floor(pet.hungerPercentage*100) or 0
+            table.insert(msg, ("%d. %s (%d%% Hunger)%s"):format(
+                i, pet.petType or "?", percent, (pet.needsFood and " [NEEDS FOOD]" or "")
+            ))
+            if i >= 5 then
+                table.insert(msg, "... and more")
+                break
+            end
+        end
+        WindUI:Notify({Title="Active Pets",Content=table.concat(msg,"\n")})
+    end
+})
+
+petInfoSection:Button({
+    Title = "Show Available Fruits",
+    Callback = function()
+        local fruits = getPlayerFruits()
+        local msg = #fruits == 0 and "No fruits found in inventory" or table.concat(fruits, ", ")
+        WindUI:Notify({Title="Fruits",Content=msg})
+    end
+})
+
+-- Pet Detection/ESP Section
+local petESPSection = PetsTab:Section({ Title = "Pet/Egg ESP" })
+
+local cs = game:GetService("CollectionService")
+local espConnections = {}
+
+local function clearPetEggESP()
+    for _, gui in pairs(espCache) do
+        if gui and gui.Parent then gui:Destroy() end
+    end
+    espCache = {}
+    for _, conn in ipairs(espConnections) do
+        if conn then conn:Disconnect() end
+    end
+    espConnections = {}
+end
+
+local function addEggESP(obj)
+    if obj:GetAttribute("OWNER") ~= LocalPlayer.Name then return end
+    local bb = Instance.new("BillboardGui")
+    bb.Name = "PetEggESP"
+    bb.Adornee = obj:FindFirstChildWhichIsA("BasePart") or obj.PrimaryPart or obj
+    bb.Size = UDim2.new(0, 200, 0, 50)
+    bb.AlwaysOnTop = true
+    bb.StudsOffset = Vector3.new(0, 2.5, 0)
+    local label = Instance.new("TextLabel")
+    label.Parent = bb
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.Text = obj:GetAttribute("EggName") or "Egg"
+    label.TextColor3 = Color3.new(0, 1, 1)
+    label.TextScaled = true
+    label.Font = Enum.Font.Gotham
+    bb.Parent = obj
+    espCache[obj] = bb
+end
+
+petESPSection:Toggle({
+    Title = "Pet Egg ESP",
+    Default = false,
+    Callback = function(state)
+        PetEggESPEnabled = state
+        clearPetEggESP()
+        if state then
+            for _, obj in pairs(cs:GetTagged("PetEggServer")) do
+                addEggESP(obj)
+            end
+            table.insert(espConnections, cs:GetInstanceAddedSignal("PetEggServer"):Connect(addEggESP))
+            table.insert(espConnections, cs:GetInstanceRemovedSignal("PetEggServer"):Connect(function(obj)
+                if espCache[obj] then espCache[obj]:Destroy() espCache[obj]=nil end
+            end))
+            WindUI:Notify({Title="ESP",Content="Pet Egg ESP enabled"})
+        else
+            WindUI:Notify({Title="ESP",Content="Pet Egg ESP disabled"})
+        end
+    end
+})
+
+-- PETS/EGGS TAB (WINDUI VERSION, PART 3) -- Pet List, Utility, (add more features as needed)
+
+-- Pet List (for info/reference)
+local KnownPetList = {
+    "Dog","Golden Lab","Bunny","Black Bunny","Cat","Orange Tabby","Deer","Spotted Deer","Monkey","Silver Monkey",
+    "Chicken","Rooster","Pig","Turtle","Cow","Snail","Giant Ant","Dragonfly","Polar Bear","Panda","Sea Otter",
+    "Caterpillar","Praying Mantis","Hedgehog","Kiwi","Mole","Frog","Echo Frog","Owl","Night Owl","Raccoon",
+    "Grey Mouse","Squirrel","Brown Mouse","Red Giant Ant","Red Fox","Chicken Zombie","Blood Hedgehog","Blood Kiwi",
+    "Blood Owl","Moon Cat","Bee","Honey Bee","Petal Bee","Golden Bee","Bear Bee","Queen Bee","Firefly","Red Dragon"
+}
+
+-- Check if player owns any known pets
+local function checkPlayerPets()
+    local foundPets, allActivePets = {}, {}
+    local ok, petsFromUtilities = pcall(function()
+        if not ReplicatedStorage:FindFirstChild("Modules") then return {} end
+        local Modules = ReplicatedStorage.Modules
+        if not Modules:FindFirstChild("PetServices") then return {} end
+        local PetServices = Modules.PetServices
+        if not PetServices:FindFirstChild("PetUtilities") then return {} end
+        local PetUtilities = require(PetServices.PetUtilities)
+        if not PetUtilities then return {} end
+        if not Modules:FindFirstChild("DataService") then return {} end
+        local DataService = require(Modules.DataService)
+        local data = DataService:GetData()
+        if not data or not data.PetsData then return {} end
+        local PetRegistry = require(ReplicatedStorage.Data.PetRegistry)
+        local PetList = PetRegistry.PetList
+        local pets = PetUtilities:GetPetsSortedByAge(LocalPlayer, 0, false, true)
+        local processedPets = {}
+        for _, petData in pairs(pets) do
+            local petTypeData = PetList[petData.PetType]
+            local defaultHunger = petTypeData and petTypeData.DefaultHunger or 100
+            local currentHunger = (petData.PetData and petData.PetData.Hunger) or 0
+            local hungerPercentage = currentHunger / defaultHunger
+            local age = (petData.PetData and petData.PetData.Age) or 0
+            local isKnownPet = false
+            for _, knownPet in pairs(KnownPetList) do
+                if petData.PetType == knownPet then isKnownPet = true break end
+            end
+            table.insert(processedPets, {
+                uuid = petData.UUID,
+                name = petData.PetType,
+                type = petData.PetType,
+                age = age,
+                currentHunger = currentHunger,
+                maxHunger = defaultHunger,
+                hungerPercentage = hungerPercentage,
+                isKnownPet = isKnownPet,
+                location = "Farm Area",
+            })
+        end
+        return processedPets
+    end)
+    if ok and petsFromUtilities then
+        for _, pet in pairs(petsFromUtilities) do
+            table.insert(allActivePets, pet)
+            if pet.isKnownPet then
+                table.insert(foundPets, pet)
+            end
+        end
+    end
+    return foundPets, allActivePets
+end
+
+-- Pet Utility Section
+local petUtilitySection = PetsTab:Section({ Title = "Pet Utility" })
+
+petUtilitySection:Button({
+    Title = "Check for Known Pets",
+    Callback = function()
+        local knownPets, allActivePets = checkPlayerPets()
+        if #knownPets > 0 then
+            local msg = {}
+            for i, pet in ipairs(knownPets) do
+                local hunger = pet.hungerPercentage and math.floor(pet.hungerPercentage*100) or 0
+                table.insert(msg, ("%d. %s (%d%% Hunger)%s"):format(i, pet.name or "?", hunger, (hunger < 70 and " [NEEDS FOOD]" or "")))
+                if i >= 5 then
+                    table.insert(msg, "... and more")
+                    break
+                end
+            end
+            WindUI:Notify({Title="My Known Pets",Content=table.concat(msg,"\n")})
+        elseif #allActivePets > 0 then
+            WindUI:Notify({Title="Pets",Content="No known pets found, but you have "..#allActivePets.." active pets."})
+        else
+            WindUI:Notify({Title="Pets",Content="You have no active pets."})
+        end
+    end
+})
+
+
+
+-- Example: Manual Pet Egg ESP Clear
+petUtilitySection:Button({
+    Title = "Clear Pet Egg ESP",
+    Callback = function()
+        clearPetEggESP()
+        WindUI:Notify({Title="ESP",Content="Cleared all Pet Egg ESP overlays."})
+    end
+})
+
+
+-- PETS/EGGS TAB (WINDUI VERSION, PART 4) -- Advanced actions, manual triggers, more utilities
+
+-- Advanced Section: Manual Triggers / Actions
+local advancedSection = PetsTab:Section({ Title = "Advanced Actions" })
+
+-- Manual Pet Feeding Cycle Trigger
+advancedSection:Button({
+    Title = "Cycle Feed All Pets (Once)",
+    Callback = function()
+        local prevState = AutoFeedPetEnabled
+        AutoFeedPetEnabled = true
+        feedPetsWithPlants()
+        AutoFeedPetEnabled = prevState
+    end
+})
+
+-- Manual ESP Refresh
+advancedSection:Button({
+    Title = "Refresh Pet Egg ESP",
+    Callback = function()
+        if PetEggESPEnabled then
+            clearPetEggESP()
+            for _, obj in pairs(cs:GetTagged("PetEggServer")) do
+                addEggESP(obj)
+            end
+            WindUI:Notify({Title="ESP",Content="Pet Egg ESP refreshed."})
+        end
+    end
+})
+
+-- Example: Mass unequip all fruits from character (utility)
+advancedSection:Button({
+    Title = "Unequip All Fruits",
+    Callback = function()
+        if LocalPlayer.Character then
+            for _, tool in pairs(LocalPlayer.Character:GetChildren()) do
+                if tool:IsA("Tool") and tool:HasTag("FruitTool") then
+                    tool.Parent = LocalPlayer.Backpack
+                end
+            end
+            WindUI:Notify({Title="Fruits",Content="All fruits unequipped."})
+        end
+    end
+})
+
+-- Example: Show count of all fruits in backpack
+advancedSection:Button({
+    Title = "Show Fruit Counts (Backpack)",
+    Callback = function()
+        local fruitCounts = {}
+        for _, tool in pairs(LocalPlayer.Backpack:GetChildren()) do
+            if tool:IsA("Tool") and tool:HasTag("FruitTool") then
+                fruitCounts[tool.Name] = (fruitCounts[tool.Name] or 0) + 1
+            end
+        end
+        local items = {}
+        for fruit, count in pairs(fruitCounts) do
+            table.insert(items, fruit .. ": " .. count)
+        end
+        WindUI:Notify({Title="Backpack Fruits",Content=next(items) and table.concat(items, "\n") or "No fruits found."})
+    end
+})
+
 
 
 
