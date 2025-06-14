@@ -520,84 +520,6 @@ EventsTab:Button({
     end
 })
 
--- Honey Collect Only Toggle
-local honeyCollecting = false
-local honeyCollectThread
-EventsTab:Toggle({
-    Title = "Honey Collect Only",
-    Icon = "droplet",
-    Default = false,
-    Callback = function(state)
-        honeyCollecting = state
-        if honeyCollecting then
-            honeyCollectThread = task.spawn(function()
-                local Players = game:GetService("Players")
-                local localPlayer = Players.LocalPlayer
-                local function isInventoryFull()
-                    return #localPlayer.Backpack:GetChildren() >= 200
-                end
-                local function getMyFarm()
-                    for _,farm in ipairs(workspace.Farm:GetChildren()) do
-                        local d = farm:FindFirstChild("Important") and farm.Important:FindFirstChild("Data")
-                        if d and d:FindFirstChild("Owner") and d.Owner.Value == localPlayer.Name then
-                            return farm
-                        end
-                    end
-                end
-                local function getMyHoneyCrops()
-                    local myFarm = getMyFarm()
-                    local crops = {}
-                    if myFarm then
-                        local plants = myFarm:FindFirstChild("Important") and myFarm.Important:FindFirstChild("Plants_Physical")
-                        if plants then
-                            for _, plant in ipairs(plants:GetChildren()) do
-                                for _, part in ipairs(plant:GetDescendants()) do
-                                    if part:IsA("BasePart") and part:FindFirstChildOfClass("ProximityPrompt") then
-                                        local parPlant = part.Parent
-                                        if parPlant and (parPlant:GetAttribute("Honey Glazed") or parPlant:GetAttribute("Pollinated")) then
-                                            table.insert(crops, part)
-                                        end
-                                        break
-                                    end
-                                end
-                            end
-                        end
-                    end
-                    return crops
-                end
-                while honeyCollecting do
-                    if isInventoryFull() then
-                        repeat
-                            task.wait(0.5)
-                        until not isInventoryFull() or not honeyCollecting
-                    end
-                    if not honeyCollecting then break end
-                    local crops = getMyHoneyCrops()
-                    for _, crop in ipairs(crops) do
-                        if not honeyCollecting or isInventoryFull() then return end
-                        local char = localPlayer.Character
-                        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                        if hrp and crop and crop.Parent then
-                            hrp.CFrame = CFrame.new(crop.Position + Vector3.new(0, 3, 0))
-                            task.wait(0.15)
-                            local prompt = crop:FindFirstChildOfClass("ProximityPrompt")
-                            if prompt then
-                                pcall(function() fireproximityprompt(prompt) end)
-                                task.wait(0.1)
-                            end
-                        end
-                    end
-                    task.wait(0.2)
-                end
-            end)
-        else
-            if honeyCollectThread then
-                task.cancel(honeyCollectThread)
-                honeyCollectThread = nil
-            end
-        end
-    end
-})
 
 EventsTab:Section({ Title = "Event ESP / Automation:" })
 
@@ -755,11 +677,89 @@ EventsTab:Toggle({
 })
 
 
-
 EventsTab:Section({ Title = "Auto Honey Farm" })
 
 local AutoCollectHoneyEnabled = false
 local AutoGivePlantsEnabled = false
+
+-- Honey Collect Only Toggle
+local honeyCollecting = false
+local honeyCollectThread
+EventsTab:Toggle({
+    Title = "Honey Collect Only",
+    Icon = "droplet",
+    Default = false,
+    Callback = function(state)
+        honeyCollecting = state
+        if honeyCollecting then
+            honeyCollectThread = task.spawn(function()
+                local Players = game:GetService("Players")
+                local localPlayer = Players.LocalPlayer
+                local function isInventoryFull()
+                    return #localPlayer.Backpack:GetChildren() >= 200
+                end
+                local function getMyFarm()
+                    for _,farm in ipairs(workspace.Farm:GetChildren()) do
+                        local d = farm:FindFirstChild("Important") and farm.Important:FindFirstChild("Data")
+                        if d and d:FindFirstChild("Owner") and d.Owner.Value == localPlayer.Name then
+                            return farm
+                        end
+                    end
+                end
+                local function getMyHoneyCrops()
+                    local myFarm = getMyFarm()
+                    local crops = {}
+                    if myFarm then
+                        local plants = myFarm:FindFirstChild("Important") and myFarm.Important:FindFirstChild("Plants_Physical")
+                        if plants then
+                            for _, plant in ipairs(plants:GetChildren()) do
+                                for _, part in ipairs(plant:GetDescendants()) do
+                                    if part:IsA("BasePart") and part:FindFirstChildOfClass("ProximityPrompt") then
+                                        local parPlant = part.Parent
+                                        if parPlant and (parPlant:GetAttribute("Honey Glazed") or parPlant:GetAttribute("Pollinated")) then
+                                            table.insert(crops, part)
+                                        end
+                                        break
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    return crops
+                end
+                while honeyCollecting do
+                    if isInventoryFull() then
+                        repeat
+                            task.wait(0.5)
+                        until not isInventoryFull() or not honeyCollecting
+                    end
+                    if not honeyCollecting then break end
+                    local crops = getMyHoneyCrops()
+                    for _, crop in ipairs(crops) do
+                        if not honeyCollecting or isInventoryFull() then return end
+                        local char = localPlayer.Character
+                        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                        if hrp and crop and crop.Parent then
+                            hrp.CFrame = CFrame.new(crop.Position + Vector3.new(0, 3, 0))
+                            task.wait(0.15)
+                            local prompt = crop:FindFirstChildOfClass("ProximityPrompt")
+                            if prompt then
+                                pcall(function() fireproximityprompt(prompt) end)
+                                task.wait(0.1)
+                            end
+                        end
+                    end
+                    task.wait(0.2)
+                end
+            end)
+        else
+            if honeyCollectThread then
+                task.cancel(honeyCollectThread)
+                honeyCollectThread = nil
+            end
+        end
+    end
+})
 
 local function getHoneyMachineData()
     local success, result = pcall(function()
