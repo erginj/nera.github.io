@@ -1208,7 +1208,251 @@ SettingsTab:Button({
 })
 
 
+local PetTab = Window:Tab({ Title = "Pets/Eggs", Icon = "paw" })
 
+local SelectedPlantsToFeed = {}
+local AutoFeedPetEnabled = false
+
+-- SERVICES/HELPERS
+local function getPetServices()
+    local s, r = pcall(function()
+        if ReplicatedStorage:FindFirstChild("Modules") and ReplicatedStorage.Modules:FindFirstChild("PetServices") then
+            local PetServices = ReplicatedStorage.Modules.PetServices
+            local ActivePetsService = require(PetServices:FindFirstChild("ActivePetsService"))
+            local PetsService = require(PetServices:FindFirstChild("PetsService"))
+            return { ActivePetsService = ActivePetsService, PetsService = PetsService }
+        end
+        return nil
+    end)
+    if s then return r else return nil end
+end
+
+local function petNeedsFood(petUUID)
+    local s, r = pcall(function()
+        local DataService = require(ReplicatedStorage.Modules.DataService)
+        local data = DataService:GetData()
+        if not data or not data.PetsData then return true end
+        local petInventory = data.PetsData.PetInventory
+        if not petInventory or not petInventory.Data then return true end
+        local petData = petInventory.Data[petUUID]
+        if not petData then return true end
+        local PetRegistry = require(ReplicatedStorage.Data.PetRegistry)
+        local PetList = PetRegistry.PetList
+        local petTypeData = PetList[petData.PetType]
+        if not petTypeData then return true end
+        local defaultHunger = petTypeData.DefaultHunger or 100
+        local currentHunger = petData.PetData.Hunger or 0
+        local hungerPercentage = currentHunger / defaultHunger
+        return hungerPercentage < 0.9
+    end)
+    if s then return r else return true end
+end
+
+local function getActivePets()
+    local petServices = getPetServices()
+    if not petServices then return {} end
+    local s, r = pcall(function()
+        local PetUtilities = require(ReplicatedStorage.Modules.PetServices:FindFirstChild("PetUtilities"))
+        local DataService = require(ReplicatedStorage.Modules.DataService)
+        local data = DataService:GetData()
+        local PetRegistry = require(ReplicatedStorage.Data.PetRegistry)
+        local PetList = PetRegistry.PetList
+        local petsFromUtilities = PetUtilities:GetPetsSortedByAge(LocalPlayer, 0, false, true)
+        local activePets = {}
+        for _, petData in pairs(petsFromUtilities) do
+            local petTypeData = PetList[petData.PetType]
+            local defaultHunger = petTypeData and petTypeData.DefaultHunger or 100
+            local currentHunger = petData.PetData and petData.PetData.Hunger or 0
+            local hungerPercentage = currentHunger / defaultHunger
+            table.insert(activePets, {
+                uuid = petData.UUID,
+                petType = petData.PetType or "Unknown",
+                petData = petData.PetData,
+                isEquipped = true,
+                currentHunger = currentHunger,
+                maxHunger = defaultHunger,
+                hungerPercentage = hungerPercentage,
+                needsFood = hungerPercentage < 0.9,
+            })
+        end
+        return activePets
+    end)
+    if s then return r else return {} end
+end
+
+local function getPlayerFruits()
+    local fruits, seen = {}, {}
+    for _, container in pairs({LocalPlayer.Character, LocalPlayer.Backpack}) do
+        if container then
+            for _, tool in pairs(container:GetChildren()) do
+                if tool:IsA("Tool") and tool:HasTag("FruitTool") and not seen[tool.Name] then
+                    seen[tool.Name] = true
+                    table.insert(fruits, tool.Name)
+                end
+            end
+        end
+    end
+    return fruits
+end
+
+local function checkPlayerPets()
+    local foundPets, allPets = {}, {}
+    local s, petsFromUtilities = pcall(function()
+        local PetUtilities = require(ReplicatedStorage.Modules.PetServices.PetUtilities)
+        local PetRegistry = require(ReplicatedStorage.Data.PetRegistry)
+        local PetList = PetRegistry.PetList
+        local DataService = require(ReplicatedStorage.Modules.DataService)
+        local data = DataService:GetData()
+        local pets = PetUtilities:GetPetsSortedByAge(LocalPlayer, 0, false, true)
+        local processed = {}
+        for _, petData in pairs(pets) do
+            local petTypeData = PetList[petData.PetType]
+            local defaultHunger = petTypeData and petTypeData.DefaultHunger or 100
+            local currentHunger = (petData.PetData and petData.PetData.Hunger) or 0
+            local hungerPercentage = currentHunger / defaultHunger
+            table.insert(processed, {
+                uuid = petData.UUID,
+                name = petData.PetType,
+                type = petData.PetType,
+                hungerPercentage = hungerPercentage,
+            })
+        end
+        return processed
+    end)
+    if s and petsFromUtilities then
+        for _, pet in pairs(petsFromUtilities) do
+            table.insert(allPets, pet)
+            table.insert(foundPets, pet)
+        end
+    end
+    return foundPets, allPets
+end
+
+-- Feed pets with selected plants
+local function feedPetsWithPlants()
+    local petServices = getPetServices()
+    if not petServices then return false end
+    local activePets = getActivePets()
+    if #activePets == 0 then return false end
+    local hungryPets, availableFruits = {}, {}
+    for _, pet in pairs(activePets) do if pet.needsFood then table.insert(hungryPets, pet) end end
+    for plantName,_ in pairs(SelectedPlantsToFeed) do
+        for _,container in pairs({LocalPlayer.Character, LocalPlayer.Backpack}) do
+            if container then
+                for _,tool in pairs(container:GetChildren()) do
+                    if tool:IsA("Tool") and tool:HasTag("FruitTool") and tool.Name == plantName then
+                        table.insert(availableFruits, { name = plantName, tool = tool })
+                        break
+                    end
+                end
+            end
+        end
+    end
+    if #hungryPets == 0 or #availableFruits == 0 then return false end
+    for _,fruitData in pairs(availableFruits) do
+        if fruitData.tool.Parent ~= LocalPlayer.Character then LocalPlayer.Character.Humanoid:EquipTool(fruitData.tool) wait(0.3) end
+        local currentTool = LocalPlayer.Character:FindFirstChildWhichIsA("Tool")
+        if currentTool and currentTool:HasTag("FruitTool") then
+            for _,pet in pairs(hungryPets) do
+                if not AutoFeedPetEnabled then return false end
+                if petNeedsFood(pet.uuid) then
+                    local ok = pcall(function() getPetServices().ActivePetsService:Feed(pet.uuid) end)
+                    if ok then WindUI:Notify({ Title = "Fed Pet", Content = "Fed "..pet.petType.." with "..fruitData.name }) end
+                    wait(0.8)
+                end
+            end
+        end
+        wait(2)
+    end
+    return true
+end
+
+local function autoFeedPets()
+    if not AutoFeedPetEnabled then return end
+    spawn(function()
+        while AutoFeedPetEnabled do
+            feedPetsWithPlants()
+            wait(3)
+        end
+    end)
+end
+
+-- UI: Auto Feed Pets Section
+local AutoFeedSection = PetTab:Section({ Title = "Auto Feed Pets" })
+
+local fruitDropdown
+fruitDropdown = AutoFeedSection:Dropdown({
+    Title = "Select Fruits to Feed",
+    Values = { "Loading fruits..." },
+    Default = {},
+    Multi = true,
+    Callback = function(selected)
+        SelectedPlantsToFeed = {}
+        for _, fruit in pairs(selected) do SelectedPlantsToFeed[fruit] = true end
+    end
+})
+
+AutoFeedSection:Button({
+    Title = "🔄 Refresh Fruit List",
+    Callback = function()
+        local fruits = getPlayerFruits()
+        if #fruits > 0 then
+            fruitDropdown:SetValues(fruits)
+            WindUI:Notify({ Title = "Fruit List", Content = "Found " .. #fruits })
+        else
+            fruitDropdown:SetValues({ "No fruits found" })
+            WindUI:Notify({ Title = "Fruit List", Content = "No fruits in inventory." })
+        end
+    end
+})
+
+AutoFeedSection:Toggle({
+    Title = "Auto Feed Pets (<90% hunger)",
+    Default = false,
+    Callback = function(enabled)
+        AutoFeedPetEnabled = enabled
+        if enabled then autoFeedPets() end
+        WindUI:Notify({ Title = "Pet Feeding", Content = enabled and "Auto feed enabled!" or "Disabled." })
+    end
+})
+
+AutoFeedSection:Button({
+    Title = "Feed Pets Now",
+    Callback = function()
+        local fedPets = feedPetsWithPlants()
+        WindUI:Notify({ Title = "Feed Pets", Content = fedPets and "Fed pets!" or "Nothing fed." })
+    end
+})
+
+-- === PET INFO SECTION ===
+local PetInfoSection = PetTab:Section({ Title = "Pet Information" })
+PetInfoSection:Button({
+    Title = "📊 Show Active Pets",
+    Callback = function()
+        local knownPets, allActivePets = checkPlayerPets()
+        local msg = ""
+        if #knownPets > 0 then
+            msg = "🐾 Active Pets:\n"
+            for i, pet in pairs(knownPets) do
+                msg = msg .. i .. ". " .. pet.name .. " (" .. (pet.hungerPercentage and (math.floor(pet.hungerPercentage*100).."%") or "?") .. ")\n"
+                if i >= 4 then msg = msg .. "..."; break end
+            end
+        elseif #allActivePets > 0 then
+            msg = "⚠️ Active Pets (fallback): " .. #allActivePets
+        else
+            msg = "❌ No active pets found!"
+        end
+        WindUI:Notify({ Title = "Active Pets", Content = msg })
+    end
+})
+PetInfoSection:Button({
+    Title = "Show Available Fruits",
+    Callback = function()
+        local fruits = getPlayerFruits()
+        local msg = #fruits > 0 and "Fruits:\n" .. table.concat(fruits, "\n") or "No fruits found"
+        WindUI:Notify({ Title = "Fruits", Content = msg })
+    end
+})
 
 
 
