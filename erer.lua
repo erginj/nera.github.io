@@ -1208,12 +1208,14 @@ SettingsTab:Button({
 })
 
 
+-- WindUI "Pets/Eggs" Tab - All Core Logic, UI Buttons, Toggles, and Dropdowns (No Pet Detection/ESP Section)
+
 local PetTab = Window:Tab({ Title = "Pets/Eggs", Icon = "paw" })
 
 local SelectedPlantsToFeed = {}
 local AutoFeedPetEnabled = false
 
--- SERVICES/HELPERS
+-- === Helpers ===
 local function getPetServices()
     local s, r = pcall(function()
         if ReplicatedStorage:FindFirstChild("Modules") and ReplicatedStorage.Modules:FindFirstChild("PetServices") then
@@ -1328,7 +1330,7 @@ local function checkPlayerPets()
     return foundPets, allPets
 end
 
--- Feed pets with selected plants
+-- === Feeding Logic ===
 local function feedPetsWithPlants()
     local petServices = getPetServices()
     if not petServices then return false end
@@ -1377,35 +1379,40 @@ local function autoFeedPets()
     end)
 end
 
--- UI: Auto Feed Pets Section
+-- === UI Construction ===
+
+-- Section: Auto Feed Pets
 local AutoFeedSection = PetTab:Section({ Title = "Auto Feed Pets" })
 
-local fruitDropdown
-fruitDropdown = AutoFeedSection:Dropdown({
-    Title = "Select Fruits to Feed",
-    Values = { "Loading fruits..." },
-    Default = {},
+AutoFeedSection:Divider({ Text = "Select Fruits to Feed" })
+local fruitList = getPlayerFruits()
+AutoFeedSection:Dropdown({
+    Title = "Fruits (multi-select, hold Ctrl)",
+    Values = fruitList,
     Multi = true,
-    Callback = function(selected)
+    Default = {},
+    Callback = function(vals)
         SelectedPlantsToFeed = {}
-        for _, fruit in pairs(selected) do SelectedPlantsToFeed[fruit] = true end
+        for _, v in pairs(vals) do SelectedPlantsToFeed[v] = true end
     end
 })
-
 AutoFeedSection:Button({
     Title = "🔄 Refresh Fruit List",
     Callback = function()
         local fruits = getPlayerFruits()
-        if #fruits > 0 then
-            fruitDropdown:SetValues(fruits)
-            WindUI:Notify({ Title = "Fruit List", Content = "Found " .. #fruits })
-        else
-            fruitDropdown:SetValues({ "No fruits found" })
-            WindUI:Notify({ Title = "Fruit List", Content = "No fruits in inventory." })
-        end
+        AutoFeedSection:Dropdown({
+            Title = "Fruits (multi-select, hold Ctrl)",
+            Values = fruits,
+            Multi = true,
+            Default = {},
+            Callback = function(vals)
+                SelectedPlantsToFeed = {}
+                for _, v in pairs(vals) do SelectedPlantsToFeed[v] = true end
+            end
+        })
+        WindUI:Notify({ Title = "Fruit List", Content = "Refreshed! Found " .. #fruits .. " fruits." })
     end
 })
-
 AutoFeedSection:Toggle({
     Title = "Auto Feed Pets (<90% hunger)",
     Default = false,
@@ -1415,7 +1422,6 @@ AutoFeedSection:Toggle({
         WindUI:Notify({ Title = "Pet Feeding", Content = enabled and "Auto feed enabled!" or "Disabled." })
     end
 })
-
 AutoFeedSection:Button({
     Title = "Feed Pets Now",
     Callback = function()
@@ -1424,7 +1430,7 @@ AutoFeedSection:Button({
     end
 })
 
--- === PET INFO SECTION ===
+-- Section: Pet Information
 local PetInfoSection = PetTab:Section({ Title = "Pet Information" })
 PetInfoSection:Button({
     Title = "📊 Show Active Pets",
@@ -1453,7 +1459,6 @@ PetInfoSection:Button({
         WindUI:Notify({ Title = "Fruits", Content = msg })
     end
 })
-
 
 
 local HttpService = game:GetService("HttpService")
