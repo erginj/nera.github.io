@@ -1207,13 +1207,12 @@ SettingsTab:Button({
     end
 })
 
-
--- WindUI "Pets/Eggs" Tab - All Core Logic, UI Buttons, Toggles, and Dropdowns (No Pet Detection/ESP Section)
-
+-- WindUI Pets/Eggs Tab (Correct Dropdown API, All Logic, No Object Method Calls)
 local PetTab = Window:Tab({ Title = "Pets/Eggs", Icon = "paw" })
 
 local SelectedPlantsToFeed = {}
 local AutoFeedPetEnabled = false
+local autoFeedThread = nil
 
 -- === Helpers ===
 local function getPetServices()
@@ -1251,8 +1250,6 @@ local function petNeedsFood(petUUID)
 end
 
 local function getActivePets()
-    local petServices = getPetServices()
-    if not petServices then return {} end
     local s, r = pcall(function()
         local PetUtilities = require(ReplicatedStorage.Modules.PetServices:FindFirstChild("PetUtilities"))
         local DataService = require(ReplicatedStorage.Modules.DataService)
@@ -1369,38 +1366,44 @@ local function feedPetsWithPlants()
     return true
 end
 
-local function autoFeedPets()
-    if not AutoFeedPetEnabled then return end
-    spawn(function()
+local function startAutoFeed()
+    if autoFeedThread then task.cancel(autoFeedThread) end
+    autoFeedThread = task.spawn(function()
         while AutoFeedPetEnabled do
             feedPetsWithPlants()
-            wait(3)
+            task.wait(3)
         end
     end)
+end
+
+local function stopAutoFeed()
+    if autoFeedThread then task.cancel(autoFeedThread) end
+    autoFeedThread = nil
 end
 
 -- === UI Construction ===
 
 -- Section: Auto Feed Pets
-local AutoFeedSection = PetTab:Section({ Title = "Auto Feed Pets" })
-
-AutoFeedSection:Divider({ Text = "Select Fruits to Feed" })
 local fruitList = getPlayerFruits()
-AutoFeedSection:Dropdown({
+local fruitDropdownDefault = {}
+
+PetTab:Divider({ Text = "Select Fruits to Feed" })
+PetTab:Dropdown({
     Title = "Fruits (multi-select, hold Ctrl)",
     Values = fruitList,
     Multi = true,
-    Default = {},
+    Default = fruitDropdownDefault,
     Callback = function(vals)
         SelectedPlantsToFeed = {}
         for _, v in pairs(vals) do SelectedPlantsToFeed[v] = true end
     end
 })
-AutoFeedSection:Button({
+
+PetTab:Button({
     Title = "🔄 Refresh Fruit List",
     Callback = function()
         local fruits = getPlayerFruits()
-        AutoFeedSection:Dropdown({
+        PetTab:Dropdown({
             Title = "Fruits (multi-select, hold Ctrl)",
             Values = fruits,
             Multi = true,
@@ -1413,16 +1416,25 @@ AutoFeedSection:Button({
         WindUI:Notify({ Title = "Fruit List", Content = "Refreshed! Found " .. #fruits .. " fruits." })
     end
 })
-AutoFeedSection:Toggle({
+
+PetTab:Divider({ Text = "Auto Feed" })
+
+PetTab:Toggle({
     Title = "Auto Feed Pets (<90% hunger)",
     Default = false,
     Callback = function(enabled)
         AutoFeedPetEnabled = enabled
-        if enabled then autoFeedPets() end
-        WindUI:Notify({ Title = "Pet Feeding", Content = enabled and "Auto feed enabled!" or "Disabled." })
+        if enabled then
+            startAutoFeed()
+            WindUI:Notify({ Title = "Pet Feeding", Content = "Auto feed enabled!" })
+        else
+            stopAutoFeed()
+            WindUI:Notify({ Title = "Pet Feeding", Content = "Auto feed disabled." })
+        end
     end
 })
-AutoFeedSection:Button({
+
+PetTab:Button({
     Title = "Feed Pets Now",
     Callback = function()
         local fedPets = feedPetsWithPlants()
@@ -1430,9 +1442,9 @@ AutoFeedSection:Button({
     end
 })
 
--- Section: Pet Information
-local PetInfoSection = PetTab:Section({ Title = "Pet Information" })
-PetInfoSection:Button({
+PetTab:Divider({ Text = "Pet Information" })
+
+PetTab:Button({
     Title = "📊 Show Active Pets",
     Callback = function()
         local knownPets, allActivePets = checkPlayerPets()
@@ -1451,7 +1463,8 @@ PetInfoSection:Button({
         WindUI:Notify({ Title = "Active Pets", Content = msg })
     end
 })
-PetInfoSection:Button({
+
+PetTab:Button({
     Title = "Show Available Fruits",
     Callback = function()
         local fruits = getPlayerFruits()
@@ -1459,6 +1472,10 @@ PetInfoSection:Button({
         WindUI:Notify({ Title = "Fruits", Content = msg })
     end
 })
+
+
+
+
 
 
 local HttpService = game:GetService("HttpService")
